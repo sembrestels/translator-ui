@@ -1,15 +1,21 @@
 import * as React from "react";
-import { useState, useEffect } from "react";
-import { Box, Button, Text, Textarea, VStack, Select, useToast } from "@chakra-ui/react";
-import { CopyIcon, DownloadIcon } from "@chakra-ui/icons";
+import { useState, useEffect, useRef } from "react";
+import { Box, Button, Text, VStack, Select, useToast, Input } from "@chakra-ui/react";
+import { ArrowForwardIcon, DownloadIcon, CloseIcon } from "@chakra-ui/icons";
+
+import { getTranslations } from "./utils/translation";
+import { Configuration, OpenAIApi } from "openai";
 
 const App: React.FC = () => {
-  const [jsonInputs, setJsonInputs] = useState<Record<string, string>>({});
-  const [mergedJson, setMergedJson] = useState<Record<string, any>>({});
+  const [uploadedJsonFiles, setJsonInputs] = useState<Record<string, string>>({});
+  const [translatedJson, setMergedJson] = useState<Record<string, any>>({});
 
   const [selectedLanguage, setSelectedLanguage] = useState("");
-  const toast = useToast();
+  const [apiKey, setApiKey] = useState(process.env.REACT_APP_OPENAI_API_KEY);
+  const [openai, setOpenai] = useState<OpenAIApi | null>(null);
+  // const [isTranslating, setIsTranslating] = useState(false);
 
+  const toast = useToast();
 
   const languages = [
     { code: "en", name: "English" },
@@ -33,6 +39,13 @@ const App: React.FC = () => {
     { code: "ca", name: "Catalan" },
     { code: "fa", name: "Farsi" },
   ];
+
+  useEffect(() => {
+    if (apiKey) {
+      const configuration = new Configuration({ apiKey });
+      setOpenai(new OpenAIApi(configuration));
+    }
+  }, [apiKey]);
 
   const showToast = (message: string) => {
     toast({
@@ -64,8 +77,8 @@ const App: React.FC = () => {
 
       try {
         const pastedJson = JSON.parse(clipboardText);
-        const newMergedJson = { ...mergedJson, ...pastedJson };
-        setMergedJson(newMergedJson);
+        const newTranslatedJson = { ...translatedJson, ...pastedJson };
+        setMergedJson(newTranslatedJson);
       } catch (error) {
         console.error("Pasted content is not valid JSON");
       }
@@ -76,7 +89,7 @@ const App: React.FC = () => {
     return () => {
       document.removeEventListener("paste", handlePaste);
     };
-  }, [mergedJson, showToast]);
+  }, [translatedJson, showToast]);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files!;
@@ -91,26 +104,97 @@ const App: React.FC = () => {
     });
 
     Promise.all(filePromises).then((fileContents) => {
-      const newJsonInputs: Record<string, string> = {};
+      const newUploadedJsonFiles: Record<string, string> = {};
       fileContents.forEach((content, index) => {
-        newJsonInputs[files[index].name] = content;
+        newUploadedJsonFiles[files[index].name] = content;
       });
-      setJsonInputs(newJsonInputs);
+      setJsonInputs(newUploadedJsonFiles);
     });
   };
 
-  const handleCopy = () => {
-    const textArea = document.createElement("textarea");
-    textArea.value = getCommonKeysChunk();
-    document.body.appendChild(textArea);
-    textArea.select();
-    document.execCommand("Copy");
-    textArea.remove();
-    showToast("JSON copied");
+  const handleTranslate = async () => {
+    const translations = await getTranslations(openai, uploadedJsonFiles, selectedLanguage, translatedJson);
+    setMergedJson(translations);
   };
+  
+  return (
+    <VStack spacing={4} p={4}>
+      <Text fontSize="4xl">JSON Translator</Text>
+      <Instructions />
+      <Text>OpenAI API Key</Text>
+      <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+      <Text>Upload JSON files</Text>
+      <FileUploader onFileUpload={handleFileUpload} />
+      <Text>Translate to:</Text>
+      <LanguageSelector languages={languages} onChange={handleLanguageChange} />
+      
+      <TranslationControls
+        handleTranslate={handleTranslate}
+      />
+      
+      <Text>Total keys in {selectedLanguage}.json: {Object.keys(translatedJson).length}</Text>
+      <Box>
+      <DownloadButton selectedLanguage={selectedLanguage} translatedJson={translatedJson} />
+      </Box>
+    </VStack>
+  );
+};
 
+const Instructions = () => {
+  return (
+    <>
+      <Text>
+        1. Upload one or more JSON files containing language translation keys.
+      </Text>
+      <Text>
+        2. Select a target language from the dropdown menu.
+      </Text>
+      <Text>
+        3. Click the "Translate" button to translate to start the translation process.
+      </Text>
+      <Text>
+        4. When it's finished, click the "Download" button to download the merged JSON file.
+      </Text>
+    </>
+  );
+};
+
+const FileUploader = ({ onFileUpload }: any) => {
+  return (
+    <input type="file" accept=".json" onChange={onFileUpload} multiple />
+  );
+};
+
+const LanguageSelector = ({ languages, onChange }: any) => {
+  return (
+    <Select placeholder="Select language" onChange={onChange}>
+      {languages.map((language: {code: string, name: string}) => (
+        <option key={language.code} value={language.code}>
+          {language.name}
+        </option>
+      ))}
+    </Select>
+  );
+};
+
+const TranslationControls = ({ handleTranslate }: any) => {
+  return (
+    <Box>
+      <Button
+        leftIcon={
+          <ArrowForwardIcon /> 
+        }
+        onClick={ handleTranslate}
+      >
+        Translate
+      </Button>
+    </Box>
+  );
+};
+
+const DownloadButton = ({ translatedJson, selectedLanguage }: any) => {
   const handleDownloadMergedJson = () => {
-    const mergedJsonString = JSON.stringify(mergedJson, null, 2);
+    const mergedJsonString = JSON.stringify(translatedJson, null, 2);
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(mergedJsonString);
     const downloadAnchorNode = document.createElement("a");
     downloadAnchorNode.setAttribute("href", dataStr);
@@ -120,80 +204,10 @@ const App: React.FC = () => {
     downloadAnchorNode.remove();
   };
 
-  const getCommonKeysChunk = () => {
-    const jsons = Object.values(jsonInputs).map((input) => JSON.parse(input));
-    const commonKeys = jsons
-      .map((json) => Object.keys(json))
-      .reduce(
-        (acc, keys) => acc.filter((key) => keys.includes(key)),
-        jsons.length > 0 ? Object.keys(jsons[0]) : []
-      )
-      .filter((key) => !mergedJson.hasOwnProperty(key)) // Filter out keys that are already in mergedJson
-      .slice(0, 10); // Only the first 10 keys
-
-    let result = `Given the following chunks, can you provide a chunk for ${selectedLanguage}.json within a formatted code block, please?\n\n`;
-
-    Object.keys(jsonInputs).forEach((fileName, fileIndex) => {
-      let fileChunk = `Chunk of file ${fileName}\n{\n`;
-
-      commonKeys.forEach((key) => {
-        if (jsons[fileIndex][key]) {
-          fileChunk += `  "${key}": "${jsons[fileIndex][key]}",\n`;
-        }
-      });
-
-      fileChunk = fileChunk.slice(0, -2) + "\n}\n\n";
-      result += fileChunk;
-    });
-
-    return result;
-  };
-  
   return (
-    <VStack spacing={4} p={4}>
-      <Text>
-        1. Upload one or more JSON files containing language translation keys.
-      </Text>
-      <Text>
-        2. Select a target language from the dropdown menu.
-      </Text>
-      <Text>
-        3. Click the "Copy" button to copy the formatted prompt for the selected language.
-      </Text>
-      <Text>
-        4. Go to ChatGPT, paste the copied prompt, and get the translation keys for the selected language.
-      </Text>
-      <Text>
-        5. Copy the resulting JSON from ChatGPT and paste it back into this application.
-      </Text>
-      <Text>
-        6. The application will automatically merge the pasted JSON and display the number of keys in the merged JSON file.
-      </Text>
-      <Text>
-        7. Click the "Download {selectedLanguage}.json" button to download the merged JSON file.
-      </Text>
-
-      <input type="file" accept=".json" onChange={handleFileUpload} multiple />
-      <Select placeholder="Select language" onChange={handleLanguageChange}>
-        {languages.map((language) => (
-          <option key={language.code} value={language.code}>
-            {language.name}
-          </option>
-        ))}
-      </Select>
-      <Textarea value={getCommonKeysChunk()} readOnly={true} />
-      <Box>
-        <Button leftIcon={<CopyIcon />} onClick={handleCopy}>
-          Copy
-        </Button>
-      </Box>
-      <Text>Total keys in {selectedLanguage}.json: {Object.keys(mergedJson).length}</Text>
-      <Box>
-      <Button leftIcon={<DownloadIcon />} onClick={handleDownloadMergedJson}>
-          Download {selectedLanguage}.json
-        </Button>
-      </Box>
-    </VStack>
+    <Button leftIcon={<DownloadIcon />} onClick={handleDownloadMergedJson}>
+      Download
+    </Button>
   );
 };
 
